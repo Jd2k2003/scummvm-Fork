@@ -1005,12 +1005,8 @@ bool Debugger::cmdExportMapJson(int argc, const char **argv) {
 	const uint32 mapno = argc > 1 ? strtol(argv[1], 0, 0) : curmapno;
 	const Common::String filename = argc > 2 ? Common::String(argv[2]) : Common::String::format("map_%03u.json", mapno);
 
-	if (mapno == curmapno) {
-		exportCurrentMapJson(filename);
-		return true;
-	}
-
-	// Switching maps changes game state, so save first and reload afterwards
+	// Making the whole map fast (and possibly switching maps) changes game
+	// state, so save first and reload afterwards
 	int slot = Ultima8Engine::get_instance()->getAutosaveSlot();
 	Common::Error result = Ultima8Engine::get_instance()->saveGameState(slot, "Pre-exportMap save");
 	if (result.getCode() != Common::kNoError) {
@@ -1018,10 +1014,15 @@ bool Debugger::cmdExportMapJson(int argc, const char **argv) {
 		return true;
 	}
 
-	if (World::get_instance()->switchMap(mapno))
+	if (mapno == curmapno || World::get_instance()->switchMap(mapno)) {
+		// Glob eggs only expand their contents (most floors and walls) when
+		// they enter the fast area, so make the whole map fast first.
+		ObjectManager::get_instance()->allow64kObjects();
+		World::get_instance()->getCurrentMap()->setWholeMapFast();
 		exportCurrentMapJson(filename);
-	else
+	} else {
 		debugPrintf("Export failed: switch to map %u FAILED\n", mapno);
+	}
 
 	Ultima8Engine::get_instance()->loadGameState(slot);
 	return false;
