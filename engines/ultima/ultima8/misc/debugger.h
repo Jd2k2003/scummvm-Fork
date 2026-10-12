@@ -140,6 +140,7 @@ private:
 
 public:
 	bool cmdExportShapes(int argc, const char **argv);
+	bool cmdExportMovie(int argc, const char **argv);
 	Debugger();
 	~Debugger() override;
 };

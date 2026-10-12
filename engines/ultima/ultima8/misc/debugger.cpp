@@ -26,6 +26,7 @@
 #include "common/system.h"
 #include "image/bmp.h"
 #include "image/png.h"
+#include "video/avi_decoder.h"
 #include "ultima/ultima8/audio/audio_process.h"
 #include "ultima/ultima8/audio/music_process.h"
 #include "ultima/ultima8/games/game_data.h"
@@ -108,6 +109,7 @@ Debugger::Debugger() : GUI::Debugger() {
 	registerCmd("GameMapGump::exportMapJson", WRAP_METHOD(Debugger, cmdExportMapJson));
 	registerCmd("exportMap", WRAP_METHOD(Debugger, cmdExportMapJson));
 	registerCmd("exportShapes", WRAP_METHOD(Debugger, cmdExportShapes));
+	registerCmd("exportMovie", WRAP_METHOD(Debugger, cmdExportMovie));
 	registerCmd("GameMapGump::incrementSortOrder", WRAP_METHOD(Debugger, cmdIncrementSortOrder));
 	registerCmd("GameMapGump::decrementSortOrder", WRAP_METHOD(Debugger, cmdDecrementSortOrder));
 
@@ -1105,6 +1107,88 @@ bool Debugger::cmdExportShapes(int argc, const char **argv) {
 	json.close();
 
 	debugPrintf("Exported %d frames of %d shapes to %s\n", frames, written, outdir.c_str());
+	return true;
+}
+
+bool Debugger::cmdExportMovie(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <outdir> [name ...]\n", argv[0]);
+		debugPrintf("Decodes each FLICS movie (all of them if no names are given) to\n");
+		debugPrintf("<outdir>/<NAME>/NNNNN.png plus <outdir>/<NAME>/movie.json with\n");
+		debugPrintf("size, frame rate and frame count. Audio is plain PCM; extract it\n");
+		debugPrintf("from the AVI with FFmpeg.\n");
+		return true;
+	}
+
+	const Common::String outdir(argv[1]);
+	Common::StringArray names;
+	for (int i = 2; i < argc; i++)
+		names.push_back(argv[i]);
+	if (names.empty()) {
+		Common::ArchiveMemberList members;
+		SearchMan.listMatchingMembers(members, "flics/*.avi");
+		for (const auto &m : members) {
+			Common::String n = m->getFileName();
+			names.push_back(Common::String(n.c_str(), n.size() - 4));
+		}
+		Common::sort(names.begin(), names.end());
+	}
+
+	const Graphics::PixelFormat rgb(3, 8, 8, 8, 0, 16, 8, 0, 0);
+	int exported = 0;
+	for (Common::String name : names) {
+		name.toUppercase();
+		Common::File *rs = new Common::File();
+		if (!rs->open(Common::Path("flics/" + name + ".avi"))) {
+			debugPrintf("Movie %s not found\n", name.c_str());
+			delete rs;
+			continue;
+		}
+		Video::AVIDecoder decoder;
+		if (!decoder.loadStream(rs)) {
+			debugPrintf("Could not decode %s\n", name.c_str());
+			continue;
+		}
+		const Common::String dir = outdir + "/" + name;
+		Graphics::Surface out;
+		out.create(decoder.getWidth(), decoder.getHeight(), rgb);
+		int frames = 0;
+		while (!decoder.endOfVideo()) {
+			const Graphics::Surface *frame = decoder.decodeNextFrame();
+			if (!frame)
+				break;
+			if (frame->format.bytesPerPixel == 1) {
+				const byte *pal = decoder.getPalette();
+				for (int y = 0; y < frame->h; y++) {
+					const byte *src = static_cast<const byte *>(frame->getBasePtr(0, y));
+					for (int x = 0; x < frame->w; x++)
+						out.setPixel(x, y, rgb.RGBToColor(pal[src[x] * 3], pal[src[x] * 3 + 1], pal[src[x] * 3 + 2]));
+				}
+			} else {
+				Graphics::Surface *conv = frame->convertTo(rgb);
+				out.copyFrom(*conv);
+				conv->free();
+				delete conv;
+			}
+			Common::DumpFile png;
+			if (png.open(Common::Path(dir + Common::String::format("/%05d.png", frames), '/'), true))
+				Image::writePNG(png, out);
+			frames++;
+		}
+		out.free();
+
+		Common::DumpFile json;
+		if (json.open(Common::Path(dir + "/movie.json", '/'), true)) {
+			const uint32 msecs = decoder.getDuration().msecs();
+			const double fps = msecs ? frames * 1000.0 / msecs : 0.0;
+			json.writeString(Common::String::format("{\"name\": \"%s\", \"width\": %u, \"height\": %u, "
+				"\"fps\": %f, \"frames\": %d}\n", name.c_str(), decoder.getWidth(), decoder.getHeight(),
+				fps, frames));
+		}
+		debugPrintf("%s: %d frames, %ux%u\n", name.c_str(), frames, decoder.getWidth(), decoder.getHeight());
+		exported++;
+	}
+	debugPrintf("Exported %d movies to %s\n", exported, outdir.c_str());
 	return true;
 }
 

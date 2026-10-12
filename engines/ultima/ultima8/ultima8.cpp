@@ -24,6 +24,7 @@
 
 #include "common/file.h"
 #include "common/rational.h"
+#include "common/tokenizer.h"
 #include "common/translation.h"
 #include "common/compression/unzip.h"
 #include "engines/dialogs.h"
@@ -599,6 +600,23 @@ Common::Error Ultima8Engine::startupGame() {
 		Common::String dir = ConfMan.get("export_shapes");
 		const char *args[] = {"exportShapes", dir.c_str()};
 		static_cast<Debugger *>(getDebugger())->cmdExportShapes(2, args);
+		quitGame();
+	}
+
+	// "export_movies=<dir>" decodes FLICS movies to PNG frames (see
+	// Debugger::cmdExportMovie) and quits; "export_movies_names=T01,01A"
+	// limits it to those movies.
+	if (ConfMan.hasKey("export_movies")) {
+		Common::String dir = ConfMan.get("export_movies");
+		Common::StringArray names;
+		if (ConfMan.hasKey("export_movies_names"))
+			names = Common::StringTokenizer(ConfMan.get("export_movies_names"), ",").split();
+		Common::Array<const char *> args;
+		args.push_back("exportMovie");
+		args.push_back(dir.c_str());
+		for (const auto &n : names)
+			args.push_back(n.c_str());
+		static_cast<Debugger *>(getDebugger())->cmdExportMovie(args.size(), args.data());
 		quitGame();
 	}
 
