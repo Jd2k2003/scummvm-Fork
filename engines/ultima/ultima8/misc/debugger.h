@@ -139,6 +139,7 @@ private:
 	bool exportCurrentMapJson(const Common::String &filename); // helper function
 
 public:
+	bool cmdExportShapes(int argc, const char **argv);
 	Debugger();
 	~Debugger() override;
 };

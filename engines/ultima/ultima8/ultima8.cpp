@@ -20,6 +20,7 @@
  */
 
 #include "ultima/ultima8/ultima8.h"
+#include "ultima/ultima8/misc/debugger.h"
 
 #include "common/file.h"
 #include "common/rational.h"
@@ -591,6 +592,15 @@ Common::Error Ultima8Engine::startupGame() {
 		return Common::kNoGameDataFoundError;
 
 	applyGameSettings();
+
+	// Batch tooling: "export_shapes=<dir>" in the game's config domain dumps
+	// every shape frame to PNG (see Debugger::cmdExportShapes) and quits.
+	if (ConfMan.hasKey("export_shapes")) {
+		Common::String dir = ConfMan.get("export_shapes");
+		const char *args[] = {"exportShapes", dir.c_str()};
+		static_cast<Debugger *>(getDebugger())->cmdExportShapes(2, args);
+		quitGame();
+	}
 
 	// Create Midi Driver for Ultima 8
 	if (getGameInfo()->_type == GameInfo::GAME_U8)

@@ -31,7 +31,11 @@
 #include "ultima/ultima8/games/game_data.h"
 #include "ultima/ultima8/gfx/inverter_process.h"
 #include "ultima/ultima8/gfx/main_shape_archive.h"
+#include "ultima/ultima8/gfx/palette.h"
+#include "ultima/ultima8/gfx/palette_manager.h"
 #include "ultima/ultima8/gfx/render_surface.h"
+#include "ultima/ultima8/gfx/shape.h"
+#include "ultima/ultima8/gfx/shape_frame.h"
 #include "ultima/ultima8/gfx/shape_info.h"
 #include "ultima/ultima8/gfx/texture.h"
 #include "ultima/ultima8/gumps/fast_area_vis_gump.h"
@@ -103,6 +107,7 @@ Debugger::Debugger() : GUI::Debugger() {
 	registerCmd("GameMapGump::dumpAllMaps", WRAP_METHOD(Debugger, cmdDumpAllMaps));
 	registerCmd("GameMapGump::exportMapJson", WRAP_METHOD(Debugger, cmdExportMapJson));
 	registerCmd("exportMap", WRAP_METHOD(Debugger, cmdExportMapJson));
+	registerCmd("exportShapes", WRAP_METHOD(Debugger, cmdExportShapes));
 	registerCmd("GameMapGump::incrementSortOrder", WRAP_METHOD(Debugger, cmdIncrementSortOrder));
 	registerCmd("GameMapGump::decrementSortOrder", WRAP_METHOD(Debugger, cmdDecrementSortOrder));
 
@@ -1026,6 +1031,81 @@ bool Debugger::cmdExportMapJson(int argc, const char **argv) {
 
 	Ultima8Engine::get_instance()->loadGameState(slot);
 	return false;
+}
+
+bool Debugger::cmdExportShapes(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <outdir> [maxframes] [firstshape] [lastshape]\n", argv[0]);
+		debugPrintf("Writes every frame of every main shape as an RGBA PNG\n");
+		debugPrintf("(<outdir>/NNNN_FF.png) plus <outdir>/shapes.json with\n");
+		debugPrintf("bounding box, family and frame offsets. maxframes defaults to 16.\n");
+		return true;
+	}
+
+	const Common::String outdir(argv[1]);
+	const uint32 maxframes = argc > 2 ? strtol(argv[2], 0, 0) : 16;
+	MainShapeArchive *shapes = GameData::get_instance()->getMainShapes();
+	const uint32 first = argc > 3 ? strtol(argv[3], 0, 0) : 0;
+	const uint32 last = argc > 4 ? strtol(argv[4], 0, 0) : shapes->getCount() - 1;
+	const Palette *gamepal = PaletteManager::get_instance()->getPalette(PaletteManager::Pal_Game);
+	const Graphics::PixelFormat rgba(4, 8, 8, 8, 8, 24, 16, 8, 0);
+
+	Common::DumpFile json;
+	if (!json.open(Common::Path(outdir + "/shapes.json", '/'), true)) {
+		debugPrintf("Could not open %s/shapes.json\n", outdir.c_str());
+		return true;
+	}
+	json.writeString("{\"shapes\": [\n");
+
+	int written = 0, frames = 0;
+	for (uint32 shapenum = first; shapenum <= last && shapenum < shapes->getCount(); shapenum++) {
+		Shape *shape = shapes->getShape(shapenum);
+		const ShapeInfo *info = shapes->getShapeInfo(shapenum);
+		if (!shape || !shape->frameCount())
+			continue;
+		const Palette *pal = shape->getPalette() ? shape->getPalette() : gamepal;
+
+		json.writeString(Common::String::format("%s{\"shape\": %u, \"frameCount\": %u, \"family\": %u, "
+			"\"size\": [%u, %u, %u], \"flags\": %u, \"frames\": [",
+			written ? ",\n" : "", shapenum, shape->frameCount(), info ? info->_family : 0,
+			info ? info->_x * 32 : 0, info ? info->_y * 32 : 0, info ? info->_z * 8 : 0,
+			info ? info->_flags : 0));
+
+		const uint32 n = MIN<uint32>(shape->frameCount(), maxframes);
+		for (uint32 f = 0; f < n; f++) {
+			const ShapeFrame *frame = shape->getFrame(f);
+			if (!frame || frame->_width <= 0 || frame->_height <= 0)
+				continue;
+			Graphics::Surface out;
+			out.create(frame->_width, frame->_height, rgba);
+			for (int y = 0; y < frame->_height; y++) {
+				for (int x = 0; x < frame->_width; x++) {
+					uint32 c = 0;
+					if (frame->hasPoint(x - frame->_xoff, y - frame->_yoff)) {
+						byte r, g, b;
+						pal->get(frame->getPixel(x - frame->_xoff, y - frame->_yoff), r, g, b);
+						c = rgba.ARGBToColor(255, r, g, b);
+					}
+					out.setPixel(x, y, c);
+				}
+			}
+			Common::DumpFile png;
+			const Common::String name = Common::String::format("%04u_%02u.png", shapenum, f);
+			if (png.open(Common::Path(outdir + "/" + name, '/'), true))
+				Image::writePNG(png, out);
+			out.free();
+			json.writeString(Common::String::format("%s{\"frame\": %u, \"file\": \"%s\", \"w\": %d, \"h\": %d, \"xoff\": %d, \"yoff\": %d}",
+				f ? ", " : "", f, name.c_str(), frame->_width, frame->_height, frame->_xoff, frame->_yoff));
+			frames++;
+		}
+		json.writeString("]}");
+		written++;
+	}
+	json.writeString("\n]}\n");
+	json.close();
+
+	debugPrintf("Exported %d frames of %d shapes to %s\n", frames, written, outdir.c_str());
+	return true;
 }
 
 bool Debugger::cmdIncrementSortOrder(int argc, const char **argv) {
