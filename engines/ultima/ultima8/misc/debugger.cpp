@@ -32,6 +32,7 @@
 #include "ultima/ultima8/gfx/inverter_process.h"
 #include "ultima/ultima8/gfx/main_shape_archive.h"
 #include "ultima/ultima8/gfx/render_surface.h"
+#include "ultima/ultima8/gfx/shape_info.h"
 #include "ultima/ultima8/gfx/texture.h"
 #include "ultima/ultima8/gumps/fast_area_vis_gump.h"
 #include "ultima/ultima8/gumps/game_map_gump.h"
@@ -46,6 +47,7 @@
 #include "ultima/ultima8/ultima8.h"
 #include "ultima/ultima8/usecode/bit_set.h"
 #include "ultima/ultima8/usecode/uc_machine.h"
+#include "ultima/ultima8/usecode/usecode.h"
 #include "ultima/ultima8/world/actors/avatar_mover_process.h"
 #include "ultima/ultima8/world/actors/main_actor.h"
 #include "ultima/ultima8/world/actors/pathfinder.h"
@@ -55,7 +57,9 @@
 #include "ultima/ultima8/world/get_object.h"
 #include "ultima/ultima8/world/item_factory.h"
 #include "ultima/ultima8/world/item_selection_process.h"
+#include "ultima/ultima8/world/monster_egg.h"
 #include "ultima/ultima8/world/target_reticle_process.h"
+#include "ultima/ultima8/world/teleport_egg.h"
 #include "ultima/ultima8/world/world.h"
 
 namespace Ultima {
@@ -97,6 +101,8 @@ Debugger::Debugger() : GUI::Debugger() {
 	registerCmd("GameMapGump::gridlines", WRAP_METHOD(Debugger, cmdGridlines));	
 	registerCmd("GameMapGump::dumpMap", WRAP_METHOD(Debugger, cmdDumpMap));
 	registerCmd("GameMapGump::dumpAllMaps", WRAP_METHOD(Debugger, cmdDumpAllMaps));
+	registerCmd("GameMapGump::exportMapJson", WRAP_METHOD(Debugger, cmdExportMapJson));
+	registerCmd("exportMap", WRAP_METHOD(Debugger, cmdExportMapJson));
 	registerCmd("GameMapGump::incrementSortOrder", WRAP_METHOD(Debugger, cmdIncrementSortOrder));
 	registerCmd("GameMapGump::decrementSortOrder", WRAP_METHOD(Debugger, cmdDecrementSortOrder));
 
@@ -886,6 +892,140 @@ bool Debugger::cmdDumpAllMaps(int argc, const char **argv) {
 	return false;
 }
 
+
+static Common::String jsonEscape(const char *str) {
+	Common::String out;
+	if (!str)
+		return out;
+	for (const char *c = str; *c; c++) {
+		if ((unsigned char)*c < 0x20)
+			continue;
+		if (*c == '"' || *c == '\\')
+			out += '\\';
+		out += *c;
+	}
+	out.trim();
+	return out;
+}
+
+// Writes every item in the current map to a JSON file, so the level can be
+// rebuilt elsewhere (e.g. as gray boxes in another engine).
+//
+// "pos" is the item's world location: the footpad's far corner in x/y (the
+// box extends towards -x/-y) and its bottom in z. "min"/"size" give the same
+// box as a min corner plus extents.
+bool Debugger::exportCurrentMapJson(const Common::String &filename) {
+	const CurrentMap *curmap = World::get_instance()->getCurrentMap();
+	MainShapeArchive *shapes = GameData::get_instance()->getMainShapes();
+	Usecode *usecode = GameData::get_instance()->getMainUsecode();
+
+	Common::DumpFile out;
+	if (!out.open(Common::Path(filename), true)) {
+		debugPrintf("Could not write file: %s\n", filename.c_str());
+		return false;
+	}
+
+	const MainActor *avatar = getMainActor();
+	const Point3 apt = avatar ? avatar->getLocation() : Point3(0, 0, 0);
+
+	out.writeString(Common::String::format(
+		"{\n\"game\": \"%s\",\n\"map\": %u,\n\"chunkSize\": %u,\n"
+		"\"avatar\": [%d, %d, %d],\n\"items\": [\n",
+		GAME_IS_CRUSADER ? "crusader" : "u8", curmap->getNum(),
+		curmap->getChunkSize(), apt.x, apt.y, apt.z));
+
+	int count = 0;
+	for (int32 cy = 0; cy < MAP_NUM_CHUNKS; cy++) {
+		for (int32 cx = 0; cx < MAP_NUM_CHUNKS; cx++) {
+			const Common::List<Item *> *list = curmap->getItemList(cx, cy);
+			if (!list)
+				continue;
+			for (const Item *item : *list) {
+				const uint32 shape = item->getShape();
+				const ShapeInfo *si = shapes->getShapeInfo(shape);
+				const Box box = item->getWorldBox();
+				const Point3 pt = item->getLocation();
+				const char *ucName = usecode ? usecode->get_class_name(shape) : nullptr;
+
+				Common::String extra;
+				const Egg *egg = dynamic_cast<const Egg *>(item);
+				const TeleportEgg *tegg = dynamic_cast<const TeleportEgg *>(item);
+				const MonsterEgg *megg = dynamic_cast<const MonsterEgg *>(item);
+				if (egg)
+					extra += Common::String::format(", \"eggRange\": [%d, %d]",
+						egg->getXRange(), egg->getYRange());
+				if (tegg)
+					extra += Common::String::format(", \"teleportId\": %d, \"teleporter\": %s",
+						tegg->getTeleportId(), strBool(tegg->isTeleporter()));
+				if (megg)
+					extra += Common::String::format(", \"monsterShape\": %d", megg->getMonsterShape());
+
+				out.writeString(Common::String::format(
+					"%s{\"id\": %u, \"shape\": %u, \"frame\": %u, \"class\": \"%s\", \"usecode\": \"%s\", "
+					"\"family\": %u, \"pos\": [%d, %d, %d], \"min\": [%d, %d, %d], \"size\": [%d, %d, %d], "
+					"\"flags\": %u, \"extFlags\": %u, \"shapeFlags\": %u, \"quality\": %u, \"npcNum\": %u, \"mapNum\": %u, "
+					"\"fixed\": %s, \"solid\": %s, \"editor\": %s, \"roof\": %s, \"draw\": %s, "
+					"\"invisible\": %s, \"flipped\": %s%s}",
+					count ? ",\n" : "",
+					item->getObjId(), shape, item->getFrame(), item->GetClassType()._className,
+					jsonEscape(ucName).c_str(), si ? si->_family : 0,
+					pt.x, pt.y, pt.z,
+					box._x - box._xd, box._y - box._yd, box._z,
+					box._xd, box._yd, box._zd,
+					item->getFlags(), item->getExtFlags(), si ? si->_flags : 0,
+					item->getQuality(), item->getNpcNum(), item->getMapNum(),
+					strBool(item->hasExtFlags(Item::EXT_FIXED)),
+					strBool(si && si->is_solid()), strBool(si && si->is_editor()),
+					strBool(si && si->is_roof()), strBool(si && si->is_draw()),
+					strBool(item->hasFlags(Item::FLG_INVISIBLE)),
+					strBool(item->hasFlags(Item::FLG_FLIPPED)),
+					extra.c_str()));
+				count++;
+			}
+		}
+	}
+
+	out.writeString("\n]\n}\n");
+	out.finalize();
+	out.close();
+
+	debugPrintf("Exported %d items from map %u to %s\n", count, curmap->getNum(),
+		filename.c_str());
+	return true;
+}
+
+bool Debugger::cmdExportMapJson(int argc, const char **argv) {
+	if (argc > 3) {
+		debugPrintf("Usage: %s [mapnum] [outfile]\n", argv[0]);
+		debugPrintf("Exports all items of the current (or given) map to JSON.\n");
+		return true;
+	}
+
+	const uint32 curmapno = World::get_instance()->getCurrentMap()->getNum();
+	const uint32 mapno = argc > 1 ? strtol(argv[1], 0, 0) : curmapno;
+	const Common::String filename = argc > 2 ? Common::String(argv[2]) : Common::String::format("map_%03u.json", mapno);
+
+	if (mapno == curmapno) {
+		exportCurrentMapJson(filename);
+		return true;
+	}
+
+	// Switching maps changes game state, so save first and reload afterwards
+	int slot = Ultima8Engine::get_instance()->getAutosaveSlot();
+	Common::Error result = Ultima8Engine::get_instance()->saveGameState(slot, "Pre-exportMap save");
+	if (result.getCode() != Common::kNoError) {
+		debugPrintf("Could not export map: pre-export save failed\n");
+		return true;
+	}
+
+	if (World::get_instance()->switchMap(mapno))
+		exportCurrentMapJson(filename);
+	else
+		debugPrintf("Export failed: switch to map %u FAILED\n", mapno);
+
+	Ultima8Engine::get_instance()->loadGameState(slot);
+	return false;
+}
 
 bool Debugger::cmdIncrementSortOrder(int argc, const char **argv) {
 	int32 count = argc > 1 ? strtol(argv[1], 0, 0) : 1;

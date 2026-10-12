@@ -70,6 +70,7 @@ private:
 	bool cmdGridlines(int argc, const char **argv);
 	bool cmdDumpMap(int argc, const char **argvv);
 	bool cmdDumpAllMaps(int argc, const char **argv);
+	bool cmdExportMapJson(int argc, const char **argv);
 	bool cmdIncrementSortOrder(int argc, const char **argv);
 	bool cmdDecrementSortOrder(int argc, const char **argv);
 
@@ -135,6 +136,7 @@ private:
 	bool cmdVisualDebugPathfinder(int argc, const char **argv);
 
 	void dumpCurrentMap(); // helper function
+	bool exportCurrentMapJson(const Common::String &filename); // helper function
 
 public:
 	Debugger();
