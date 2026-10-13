@@ -32,6 +32,7 @@
 #include "ultima/ultima8/gfx/shape.h"
 #include "ultima/ultima8/gfx/shape_frame.h"
 #include "ultima/ultima8/usecode/uc_machine.h"
+#include "ultima/ultima8/misc/debugger.h"
 
 namespace Ultima {
 namespace Ultima8 {
@@ -251,6 +252,11 @@ bool ComputerGump::OnKeyDown(int key, int mod) {
 
 uint32 ComputerGump::I_readComputer(const uint8 *args, unsigned int /*argsize*/) {
 	ARG_STRING(str);
+
+	if (g_useTextCapture._active) {
+		g_useTextCapture._computer.push_back(str);
+		return 0;
+	}
 
 	Gump *gump = new ComputerGump(str);
 	gump->InitGump(0);

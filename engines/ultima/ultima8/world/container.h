@@ -59,6 +59,11 @@ public:
 	//! \return true if successful, false if item wasn't in container
 	virtual bool removeItem(Item *item);
 
+	//! The items inside this container (for tools such as the map exporter)
+	const Common::List<Item *> &getContents() const {
+		return _contents;
+	}
+
 	//! Move an item to the end of the contents list
 	//! \param item The item to move
 	//! \return true if successful, false if item isn't in this container

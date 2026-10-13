@@ -29,6 +29,7 @@
 #include "ultima/ultima8/kernel/mouse.h"
 #include "ultima/ultima8/gumps/widgets/button_widget.h"
 #include "ultima/ultima8/usecode/uc_process.h"
+#include "ultima/ultima8/misc/debugger.h"
 
 namespace Ultima {
 namespace Ultima8 {
@@ -242,6 +243,13 @@ bool KeypadGump::OnTextInput(int unicode) {
 
 uint32 KeypadGump::I_showKeypad(const uint8 *args, unsigned int /*argsize*/) {
 	ARG_UINT16(target)
+
+	if (g_useTextCapture._active) {
+		// Record the code instead of asking for it; the usecode then
+		// carries on as if a wrong code was entered
+		g_useTextCapture._keypad.push_back(target);
+		return 0;
+	}
 
 	UCProcess *current = dynamic_cast<UCProcess *>(Kernel::get_instance()->getRunningProcess());
 	assert(current);

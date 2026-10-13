@@ -61,6 +61,7 @@
 #include "ultima/ultima8/world/missile_tracker.h"
 #include "ultima/ultima8/world/crosshair_process.h"
 #include "ultima/ultima8/world/actors/anim_action.h"
+#include "ultima/ultima8/misc/debugger.h"
 
 namespace Ultima {
 namespace Ultima8 {
@@ -2031,6 +2032,11 @@ void Item::clearGump() {
 }
 
 ProcId Item::bark(const Common::String &msg) {
+	if (g_useTextCapture._active) {
+		g_useTextCapture._barks.push_back(msg);
+		return 0;
+	}
+
 	closeBark();
 
 	uint32 shapenum = getShape();

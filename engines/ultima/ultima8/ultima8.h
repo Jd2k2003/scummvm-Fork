@@ -132,6 +132,12 @@ private:
 	 */
 	void showSplashScreen();
 
+	//! Batch exports that need a loaded game ("export_map", "export_use_text"):
+	//! run once the game start process has loaded the save, then quit
+	void runPendingBatchExport();
+	bool _pendingBatchExport = false;
+	int _batchExportWait = 0;
+
 	//! write savegame info (time, ..., game-specifics)
 	void writeSaveInfo(Common::WriteStream *ws);
 

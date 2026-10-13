@@ -23,6 +23,8 @@
 #define ULTIMA_ULTIMA8_ENGINE_DEBUGGER_H
 
 #include "gui/debugger.h"
+#include "common/array.h"
+#include "common/str-array.h"
 
 namespace Ultima {
 namespace Ultima8 {
@@ -30,6 +32,26 @@ namespace Ultima8 {
 /**
  * Debugger base class
  */
+/**
+ * Batch export of what using an item shows (computer text, keypad codes,
+ * barks). While _active, the gump intrinsics record into this instead of
+ * opening their gumps. See Debugger::cmdExportUseText.
+ */
+struct UseTextCapture {
+	bool _active = false;
+	Common::StringArray _computer;
+	Common::StringArray _barks;
+	Common::Array<int> _keypad;
+
+	void clear() {
+		_computer.clear();
+		_barks.clear();
+		_keypad.clear();
+	}
+};
+
+extern UseTextCapture g_useTextCapture;
+
 class Debugger : public GUI::Debugger {
 private:
 	const char *strBool(bool flag) {
@@ -70,7 +92,6 @@ private:
 	bool cmdGridlines(int argc, const char **argv);
 	bool cmdDumpMap(int argc, const char **argvv);
 	bool cmdDumpAllMaps(int argc, const char **argv);
-	bool cmdExportMapJson(int argc, const char **argv);
 	bool cmdIncrementSortOrder(int argc, const char **argv);
 	bool cmdDecrementSortOrder(int argc, const char **argv);
 
@@ -139,8 +160,10 @@ private:
 	bool exportCurrentMapJson(const Common::String &filename); // helper function
 
 public:
+	bool cmdExportMapJson(int argc, const char **argv);
 	bool cmdExportShapes(int argc, const char **argv);
 	bool cmdExportMovie(int argc, const char **argv);
+	bool cmdExportUseText(int argc, const char **argv);
 	Debugger();
 	~Debugger() override;
 };

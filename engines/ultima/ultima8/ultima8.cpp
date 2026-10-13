@@ -38,6 +38,7 @@
 #include "ultima/ultima8/conf/config_file_manager.h"
 #include "ultima/ultima8/filesys/savegame.h"
 #include "ultima/ultima8/games/game_data.h"
+#include "ultima/ultima8/games/start_crusader_process.h"
 #include "ultima/ultima8/gfx/cycle_process.h"
 #include "ultima/ultima8/gfx/fonts/font_manager.h"
 #include "ultima/ultima8/gfx/render_surface.h"
@@ -631,6 +632,10 @@ Common::Error Ultima8Engine::startupGame() {
 	if (!newGame(saveSlot))
 		return Common::kNoGameDataFoundError;
 
+	// Batch tooling that needs a loaded game (use "save_slot" to pick one);
+	// see runPendingBatchExport
+	_pendingBatchExport = ConfMan.hasKey("export_map") || ConfMan.hasKey("export_use_text");
+
 	debug(1, "-- Game Initialized --");
 	return Common::kNoError;
 }
@@ -642,6 +647,37 @@ static uint32 _fastTicksNow() {
 	return g_system->getMillis() * 3;
 }
 
+void Ultima8Engine::runPendingBatchExport() {
+	// Wait until the start process has loaded the save, then a little longer
+	// so the map's processes settle and the game can save again
+	for (const Process *p : _kernel->getProcesses()) {
+		if (dynamic_cast<const StartCrusaderProcess *>(p) && !p->is_terminated()) {
+			_batchExportWait = 0;
+			return;
+		}
+	}
+	if (++_batchExportWait < 60)
+		return;
+	_pendingBatchExport = false;
+
+	// "export_map=<mapnum>,<file>" runs exportMap and "export_use_text=<file>"
+	// runs exportUseText on the loaded map, then the game quits
+	Debugger *debugger = static_cast<Debugger *>(getDebugger());
+	if (ConfMan.hasKey("export_map")) {
+		Common::StringArray parts = Common::StringTokenizer(ConfMan.get("export_map"), ",").split();
+		if (parts.size() == 2) {
+			const char *args[] = {"exportMap", parts[0].c_str(), parts[1].c_str()};
+			debugger->cmdExportMapJson(3, args);
+		}
+	}
+	if (ConfMan.hasKey("export_use_text")) {
+		Common::String file = ConfMan.get("export_use_text");
+		const char *args[] = {"exportUseText", file.c_str()};
+		debugger->cmdExportUseText(2, args);
+	}
+	quitGame();
+}
+
 Common::Error Ultima8Engine::runGame() {
 	_isRunning = true;
 
@@ -650,6 +686,9 @@ Common::Error Ultima8Engine::runGame() {
 	Common::Event event;
 	while (_isRunning) {
 		_inBetweenFrame = true;  // Will get set false if it's not an _inBetweenFrame
+
+		if (_pendingBatchExport)
+			runPendingBatchExport();
 
 		if (!_frameLimit) {
 			for (unsigned int tick = 0; tick < Kernel::TICKS_PER_FRAME; tick++) {

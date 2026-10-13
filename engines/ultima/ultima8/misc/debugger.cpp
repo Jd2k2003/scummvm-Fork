@@ -59,6 +59,7 @@
 #include "ultima/ultima8/world/actors/quick_avatar_mover_process.h"
 #include "ultima/ultima8/world/camera_process.h"
 #include "ultima/ultima8/world/current_map.h"
+#include "ultima/ultima8/world/container.h"
 #include "ultima/ultima8/world/get_object.h"
 #include "ultima/ultima8/world/item_factory.h"
 #include "ultima/ultima8/world/item_selection_process.h"
@@ -110,6 +111,7 @@ Debugger::Debugger() : GUI::Debugger() {
 	registerCmd("exportMap", WRAP_METHOD(Debugger, cmdExportMapJson));
 	registerCmd("exportShapes", WRAP_METHOD(Debugger, cmdExportShapes));
 	registerCmd("exportMovie", WRAP_METHOD(Debugger, cmdExportMovie));
+	registerCmd("exportUseText", WRAP_METHOD(Debugger, cmdExportUseText));
 	registerCmd("GameMapGump::incrementSortOrder", WRAP_METHOD(Debugger, cmdIncrementSortOrder));
 	registerCmd("GameMapGump::decrementSortOrder", WRAP_METHOD(Debugger, cmdDecrementSortOrder));
 
@@ -966,6 +968,21 @@ bool Debugger::exportCurrentMapJson(const Common::String &filename) {
 						tegg->getTeleportId(), strBool(tegg->isTeleporter()));
 				if (megg)
 					extra += Common::String::format(", \"monsterShape\": %d", megg->getMonsterShape());
+				const Container *container = dynamic_cast<const Container *>(item);
+				if (container && !container->getContents().empty()) {
+					extra += ", \"contents\": [";
+					bool first = true;
+					for (const Item *inside : container->getContents()) {
+						const char *insideUc = usecode ? usecode->get_class_name(inside->getShape()) : nullptr;
+						const ShapeInfo *isi = shapes->getShapeInfo(inside->getShape());
+						extra += Common::String::format("%s{\"id\": %u, \"shape\": %u, \"frame\": %u, "
+							"\"usecode\": \"%s\", \"family\": %u, \"quality\": %u}",
+							first ? "" : ", ", inside->getObjId(), inside->getShape(), inside->getFrame(),
+							jsonEscape(insideUc).c_str(), isi ? isi->_family : 0, inside->getQuality());
+						first = false;
+					}
+					extra += "]";
+				}
 
 				out.writeString(Common::String::format(
 					"%s{\"id\": %u, \"shape\": %u, \"frame\": %u, \"class\": \"%s\", \"usecode\": \"%s\", "
@@ -1031,6 +1048,115 @@ bool Debugger::cmdExportMapJson(int argc, const char **argv) {
 		debugPrintf("Export failed: switch to map %u FAILED\n", mapno);
 	}
 
+	Ultima8Engine::get_instance()->loadGameState(slot);
+	return false;
+}
+
+UseTextCapture g_useTextCapture;
+
+bool Debugger::cmdExportUseText(int argc, const char **argv) {
+	if (argc < 2) {
+		debugPrintf("Usage: %s <outfile> [CLASSPREFIX ...]\n", argv[0]);
+		debugPrintf("Uses every item of the current map whose usecode class starts with\n");
+		debugPrintf("one of the prefixes (default KEYPAD MONIT BIGCOM SIGN COMPUT TERMIN)\n");
+		debugPrintf("and records what it shows instead of opening the gumps: computer\n");
+		debugPrintf("text, keypad codes and barks. Writes JSON, then reloads the save.\n");
+		return true;
+	}
+
+	const Common::String filename(argv[1]);
+	Common::StringArray prefixes;
+	for (int i = 2; i < argc; i++)
+		prefixes.push_back(argv[i]);
+	if (prefixes.empty())
+		prefixes = Common::StringArray({"KEYPAD", "MONIT", "BIGCOM", "SIGN", "COMPUT", "TERMIN"});
+
+	// Using items runs their usecode, which can change game state
+	int slot = Ultima8Engine::get_instance()->getAutosaveSlot();
+	if (Ultima8Engine::get_instance()->saveGameState(slot, "Pre-exportUseText save").getCode() != Common::kNoError) {
+		debugPrintf("Could not export: pre-export save failed\n");
+		return true;
+	}
+
+	CurrentMap *curmap = World::get_instance()->getCurrentMap();
+	Usecode *usecode = GameData::get_instance()->getMainUsecode();
+	Kernel *kernel = Kernel::get_instance();
+
+	// Collect first: running usecode can move or create items
+	Common::Array<ObjId> ids;
+	for (int32 cy = 0; cy < MAP_NUM_CHUNKS; cy++) {
+		for (int32 cx = 0; cx < MAP_NUM_CHUNKS; cx++) {
+			const Common::List<Item *> *list = curmap->getItemList(cx, cy);
+			if (!list)
+				continue;
+			for (const Item *item : *list) {
+				const char *ucName = usecode ? usecode->get_class_name(item->getShape()) : nullptr;
+				if (!ucName)
+					continue;
+				for (const auto &p : prefixes) {
+					if (Common::String(ucName).hasPrefix(p)) {
+						ids.push_back(item->getObjId());
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	Common::DumpFile out;
+	if (!out.open(Common::Path(filename), true)) {
+		debugPrintf("Could not write file: %s\n", filename.c_str());
+		return true;
+	}
+	out.writeString(Common::String::format("{\n\"map\": %u,\n\"items\": [\n", curmap->getNum()));
+
+	int count = 0, withText = 0;
+	for (ObjId id : ids) {
+		Item *item = getItem(id);
+		if (!item)
+			continue;
+		const Point3 pt = item->getLocation();
+		const char *ucName = usecode->get_class_name(item->getShape());
+
+		g_useTextCapture.clear();
+		g_useTextCapture._active = true;
+		const ProcId pid = item->callUsecodeEvent_use();
+		// Run until the use process (and anything it spawned) settles
+		for (int tick = 0; pid && tick < 300; tick++) {
+			kernel->runProcesses();
+			const Process *p = kernel->getProcess(pid);
+			if (!p || p->is_terminated())
+				break;
+		}
+		g_useTextCapture._active = false;
+
+		Common::String fields;
+		for (const auto &t : g_useTextCapture._computer)
+			fields += Common::String::format("%s\"%s\"", fields.empty() ? "" : ", ", jsonEscape(t.c_str()).c_str());
+		Common::String barks;
+		for (const auto &t : g_useTextCapture._barks)
+			barks += Common::String::format("%s\"%s\"", barks.empty() ? "" : ", ", jsonEscape(t.c_str()).c_str());
+		Common::String codes;
+		for (int c : g_useTextCapture._keypad)
+			codes += Common::String::format("%s%d", codes.empty() ? "" : ", ", c);
+
+		out.writeString(Common::String::format(
+			"%s{\"id\": %u, \"shape\": %u, \"frame\": %u, \"usecode\": \"%s\", \"pos\": [%d, %d, %d], "
+			"\"quality\": %u, \"npcNum\": %u, \"mapNum\": %u, "
+			"\"computer\": [%s], \"barks\": [%s], \"keypadCodes\": [%s]}",
+			count ? ",\n" : "", id, item->getShape(), item->getFrame(), jsonEscape(ucName).c_str(),
+			pt.x, pt.y, pt.z, item->getQuality(), item->getNpcNum(), item->getMapNum(),
+			fields.c_str(), barks.c_str(), codes.c_str()));
+		count++;
+		if (!fields.empty() || !barks.empty() || !codes.empty())
+			withText++;
+	}
+	out.writeString("\n]\n}\n");
+	out.finalize();
+	out.close();
+	g_useTextCapture.clear();
+
+	debugPrintf("Used %d items, %d showed text or a keypad; wrote %s\n", count, withText, filename.c_str());
 	Ultima8Engine::get_instance()->loadGameState(slot);
 	return false;
 }
