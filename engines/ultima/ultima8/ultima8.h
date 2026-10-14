@@ -137,6 +137,7 @@ private:
 	void runPendingBatchExport();
 	bool _pendingBatchExport = false;
 	int _batchExportWait = 0;
+	int _batchStage = 0;
 
 	//! write savegame info (time, ..., game-specifics)
 	void writeSaveInfo(Common::WriteStream *ws);

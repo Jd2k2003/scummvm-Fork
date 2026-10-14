@@ -21,8 +21,11 @@
 
 #include "ultima/ultima8/ultima8.h"
 #include "ultima/ultima8/misc/debugger.h"
+#include "ultima/ultima8/world/actors/main_actor.h"
+#include "ultima/ultima8/world/get_object.h"
 
 #include "common/file.h"
+#include "common/fs.h"
 #include "common/rational.h"
 #include "common/tokenizer.h"
 #include "common/translation.h"
@@ -634,7 +637,8 @@ Common::Error Ultima8Engine::startupGame() {
 
 	// Batch tooling that needs a loaded game (use "save_slot" to pick one);
 	// see runPendingBatchExport
-	_pendingBatchExport = ConfMan.hasKey("export_map") || ConfMan.hasKey("export_use_text");
+	_pendingBatchExport = ConfMan.hasKey("export_map") || ConfMan.hasKey("export_use_text")
+		|| ConfMan.hasKey("batch_info") || ConfMan.hasKey("batch_teleport") || ConfMan.hasKey("batch_save");
 
 	debug(1, "-- Game Initialized --");
 	return Common::kNoError;
@@ -658,6 +662,48 @@ void Ultima8Engine::runPendingBatchExport() {
 	}
 	if (++_batchExportWait < 60)
 		return;
+
+	// "batch_info=<file>" writes the avatar's map and position;
+	// "batch_teleport=<x>,<y>,<z>" or "=<eggnum>" moves the avatar on the
+	// current map, then (after the map settles) "batch_save=<slot>,<name>"
+	// saves to that slot
+	if (_batchStage == 0) {
+		MainActor *av = getMainActor();
+		if (ConfMan.hasKey("batch_info") && av) {
+			Common::FSNode node(Common::Path(ConfMan.get("batch_info"), '/'));
+			Common::WriteStream *out = node.createWriteStream();
+			if (out) {
+				Point3 pt = av->getLocation();
+				out->writeString(Common::String::format("map %d x %d y %d z %d\n", av->getMapNum(), pt.x, pt.y, pt.z));
+				out->finalize();
+				delete out;
+			}
+		}
+		if (ConfMan.hasKey("batch_teleport") && av) {
+			Common::StringArray parts = Common::StringTokenizer(ConfMan.get("batch_teleport"), ",").split();
+			if (parts.size() == 3)
+				av->teleport(av->getMapNum(), atoi(parts[0].c_str()), atoi(parts[1].c_str()), atoi(parts[2].c_str()));
+			else if (parts.size() == 1)
+				av->teleport(av->getMapNum(), atoi(parts[0].c_str()));
+		}
+		if (ConfMan.hasKey("batch_save")) {
+			_batchStage = 1;
+			_batchExportWait = 0;
+			return;
+		}
+	} else if (_batchStage == 1) {
+		if (_batchExportWait < 120)
+			return;
+		Common::StringArray parts = Common::StringTokenizer(ConfMan.get("batch_save"), ",").split();
+		if (parts.size() >= 2) {
+			Common::String desc = parts[1];
+			for (uint i = 2; i < parts.size(); i++)
+				desc += "," + parts[i];
+			Common::Error result = saveGameState(atoi(parts[0].c_str()), desc);
+			if (result.getCode() != Common::kNoError)
+				warning("batch_save failed: %s", result.getDesc().c_str());
+		}
+	}
 	_pendingBatchExport = false;
 
 	// "export_map=<mapnum>,<file>" runs exportMap and "export_use_text=<file>"
