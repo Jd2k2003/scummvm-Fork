@@ -55,6 +55,7 @@ public:
 	bool reserveObjId(ObjId objid);
 	void clearObjId(ObjId objid);
 	Object *getObject(ObjId objid) const;
+	uint32 getNumObjects() const { return _objects.size(); }
 
 	//! increase the maximum allowed object ID
 	//! Note: this shouldn't be used in normal circumstances.

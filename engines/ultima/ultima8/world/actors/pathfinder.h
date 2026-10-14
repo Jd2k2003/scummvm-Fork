@@ -81,6 +81,13 @@ public:
 	//! pathfind. If true, the found path is returned in path
 	bool pathfind(Common::Array<PathfindingAction> &path);
 
+	//! Nodes expanded before giving up (the game uses 200; batch reach
+	//! checks raise it)
+	static unsigned int _nodeLimit;
+	//! Item targets also need the actor's feet within the item's height
+	//! (the game checks x/y only)
+	static bool _strictZ;
+
 #ifdef DEBUG_PATHFINDER
 	static ObjId _visualDebugActor;
 #endif

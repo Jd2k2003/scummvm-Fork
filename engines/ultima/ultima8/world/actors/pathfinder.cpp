@@ -88,6 +88,8 @@ bool PathfindingState::checkItem(const Item *item, int xyRange, int zRange) cons
 		range = itemYmin - _point.y;
 
 	// FIXME: check _point.z properly
+	if (Pathfinder::_strictZ && (_point.z < pt.z - 64 || _point.z > pt.z + itemZd + 8))
+		return false;
 
 	return (range <= xyRange);
 }
@@ -166,6 +168,9 @@ void Pathfinder::setTarget(Item *item, bool hit) {
 	}
 }
 
+unsigned int Pathfinder::_nodeLimit = 200;
+bool Pathfinder::_strictZ = false;
+
 bool Pathfinder::canReach() {
 	Common::Array<PathfindingAction> path;
 	return pathfind(path);
@@ -195,7 +200,7 @@ bool Pathfinder::checkTarget(const PathNode *node) const {
 		if (_hitMode) {
 			return node->state.checkHit(_actor, _targetItem);
 		} else {
-			return node->state.checkItem(_targetItem, 32, 8);
+			return node->state.checkItem(_targetItem, _strictZ ? 128 : 32, 8);
 		}
 	} else {
 		return node->state.checkPoint(_target, 48*48);
@@ -527,7 +532,7 @@ bool Pathfinder::pathfind(Common::Array<PathfindingAction> &path) {
 
 	unsigned int expandedNodes = 0;
 	const unsigned int NODELIMIT_MIN = 30;  //! constant
-	const unsigned int NODELIMIT_MAX = 200; //! constant
+	const unsigned int NODELIMIT_MAX = _nodeLimit;
 	bool found = false;
 	uint32 starttime = g_system->getMillis();
 
@@ -592,7 +597,7 @@ bool Pathfinder::pathfind(Common::Array<PathfindingAction> &path) {
 
 		if (expandedNodes >= NODELIMIT_MIN && ((expandedNodes) % 5) == 0) {
 			uint32 elapsed_ms = g_system->getMillis() - starttime;
-			if (elapsed_ms > 350) break;
+			if (elapsed_ms > 350 && _nodeLimit <= 200) break;
 		}
 	}
 

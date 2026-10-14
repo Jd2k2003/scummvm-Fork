@@ -23,6 +23,9 @@
 #include "ultima/ultima8/misc/debugger.h"
 #include "ultima/ultima8/world/actors/main_actor.h"
 #include "ultima/ultima8/world/get_object.h"
+#include "ultima/ultima8/world/actors/pathfinder.h"
+#include "ultima/ultima8/world/current_map.h"
+#include "ultima/ultima8/world/world.h"
 
 #include "common/file.h"
 #include "common/fs.h"
@@ -86,6 +89,9 @@
 #include "ultima/ultima8/world/destroy_item_process.h"
 #include "ultima/ultima8/world/egg_hatcher_process.h"
 #include "ultima/ultima8/world/get_object.h"
+#include "ultima/ultima8/world/actors/pathfinder.h"
+#include "ultima/ultima8/world/current_map.h"
+#include "ultima/ultima8/world/world.h"
 #include "ultima/ultima8/world/item_selection_process.h"
 #include "ultima/ultima8/world/snap_process.h"
 #include "ultima/ultima8/world/split_item_process.h"
@@ -638,7 +644,8 @@ Common::Error Ultima8Engine::startupGame() {
 	// Batch tooling that needs a loaded game (use "save_slot" to pick one);
 	// see runPendingBatchExport
 	_pendingBatchExport = ConfMan.hasKey("export_map") || ConfMan.hasKey("export_use_text")
-		|| ConfMan.hasKey("batch_info") || ConfMan.hasKey("batch_teleport") || ConfMan.hasKey("batch_save");
+		|| ConfMan.hasKey("batch_info") || ConfMan.hasKey("batch_teleport") || ConfMan.hasKey("batch_save")
+		|| ConfMan.hasKey("batch_screenshot") || ConfMan.hasKey("batch_reach");
 
 	debug(1, "-- Game Initialized --");
 	return Common::kNoError;
@@ -649,6 +656,91 @@ Common::Error Ultima8Engine::startupGame() {
 //
 static uint32 _fastTicksNow() {
 	return g_system->getMillis() * 3;
+}
+
+// "batch_reach=<outfile>;<label>:<shape>:<x>:<y>:<z>;..." runs the game's
+// own pathfinder (node limit raised, feet within the target's height) from
+// the avatar to the item of that shape nearest each point, with the whole
+// map loaded. "batch_open_doors=<shape>,..." first removes every item of
+// those shapes (doors, energy walls), so the result means "reachable if
+// every door were open". Writes "<label> reachable|unreachable|missing".
+void Ultima8Engine::runBatchReach() {
+	Common::StringArray parts = Common::StringTokenizer(ConfMan.get("batch_reach"), ";").split();
+	if (parts.empty())
+		return;
+	MainActor *av = getMainActor();
+	CurrentMap *map = World::get_instance()->getCurrentMap();
+	map->setWholeMapFast();
+	ObjectManager *om = ObjectManager::get_instance();
+
+	if (ConfMan.hasKey("batch_open_doors")) {
+		Common::StringArray shapes = Common::StringTokenizer(ConfMan.get("batch_open_doors"), ",").split();
+		Common::Array<uint32> doorShapes;
+		for (const auto &sh : shapes)
+			doorShapes.push_back(atoi(sh.c_str()));
+		int removed = 0;
+		for (uint32 id = 2; id < om->getNumObjects(); id++) {
+			Item *item = dynamic_cast<Item *>(om->getObject(id));
+			if (!item || item->getParent() || item == av)
+				continue;
+			for (uint32 sh : doorShapes) {
+				if (item->getShape() == sh) {
+					item->destroy(true);
+					removed++;
+					break;
+				}
+			}
+		}
+		_batchStartNote += Common::String::format(" (removed %d doors)", removed);
+	}
+
+	Common::FSNode node(Common::Path(parts[0], '/'));
+	Common::WriteStream *out = node.createWriteStream();
+	if (!out)
+		return;
+	Point3 start = av->getLocation();
+	out->writeString(Common::String::format("start %d %d %d%s\n", start.x, start.y, start.z, _batchStartNote.c_str()));
+	Pathfinder::_nodeLimit = ConfMan.hasKey("batch_reach_nodes") ? ConfMan.getInt("batch_reach_nodes") : 20000;
+	Pathfinder::_strictZ = true;
+	for (uint i = 1; i < parts.size(); i++) {
+		Common::StringArray f = Common::StringTokenizer(parts[i], ":").split();
+		if (f.size() != 5)
+			continue;
+		Point3 pt(atoi(f[2].c_str()), atoi(f[3].c_str()), atoi(f[4].c_str()));
+		// Shape "P": a plain point (sanity checks)
+		if (f[1] == "P") {
+			Pathfinder pf;
+			pf.init(av);
+			pf.setTarget(pt);
+			out->writeString(Common::String::format("%s %s" "\n", f[0].c_str(), pf.canReach() ? "reachable" : "unreachable"));
+			continue;
+		}
+		uint32 shape = atoi(f[1].c_str());
+		Item *target = nullptr;
+		int best = 0;
+		for (uint32 id = 2; id < om->getNumObjects(); id++) {
+			Item *item = dynamic_cast<Item *>(om->getObject(id));
+			if (!item || item->getParent() || item->getShape() != shape)
+				continue;
+			int d = item->getLocation().sqrDist(pt);
+			if (!target || d < best) {
+				target = item;
+				best = d;
+			}
+		}
+		const char *result = "missing";
+		if (target && best <= 64 * 64) {
+			Pathfinder pf;
+			pf.init(av);
+			pf.setTarget(target);
+			result = pf.canReach() ? "reachable" : "unreachable";
+		}
+		out->writeString(Common::String::format("%s %s\n", f[0].c_str(), result));
+	}
+	Pathfinder::_nodeLimit = 200;
+	Pathfinder::_strictZ = false;
+	out->finalize();
+	delete out;
 }
 
 void Ultima8Engine::runPendingBatchExport() {
@@ -686,7 +778,7 @@ void Ultima8Engine::runPendingBatchExport() {
 			else if (parts.size() == 1)
 				av->teleport(av->getMapNum(), atoi(parts[0].c_str()));
 		}
-		if (ConfMan.hasKey("batch_save")) {
+		if (ConfMan.hasKey("batch_save") || ConfMan.hasKey("batch_screenshot") || ConfMan.hasKey("batch_reach")) {
 			_batchStage = 1;
 			_batchExportWait = 0;
 			return;
@@ -694,6 +786,48 @@ void Ultima8Engine::runPendingBatchExport() {
 	} else if (_batchStage == 1) {
 		if (_batchExportWait < 120)
 			return;
+		// After a teleport (the area's glob eggs have expanded by now), make
+		// sure the avatar stands somewhere valid: on a floor, not inside a
+		// desk or wall. Otherwise move to the nearest clear spot.
+		MainActor *av = getMainActor();
+		_batchStartNote.clear();
+		if (ConfMan.hasKey("batch_teleport") && av && !av->canExistAt(av->getLocation(), true)) {
+			Point3 at = av->getLocation();
+			bool found = false;
+			for (int r = 8; r <= 320 && !found; r += 8) {
+				for (int dz = 0; dz <= 16 && !found; dz += 8) {
+					for (int a = 0; a < 32 && !found; a++) {
+						double ang = a * M_PI / 16;
+						Point3 pt(at.x + (int)(r * cos(ang)), at.y + (int)(r * sin(ang)), at.z + dz);
+						if (av->canExistAt(pt, true)) {
+							av->move(pt.x, pt.y, pt.z);
+							_batchStartNote = Common::String::format(" moved from %d %d %d (blocked)", at.x, at.y, at.z);
+							found = true;
+						}
+					}
+				}
+			}
+			if (!found)
+				_batchStartNote = " BLOCKED: no clear spot within 320";
+		}
+		_batchStage = 2;
+		_batchExportWait = 0;
+		return;
+	} else if (_batchStage == 2) {
+		if (_batchExportWait < 30)
+			return;
+		// "batch_screenshot=<file>": the game view as PNG
+		if (ConfMan.hasKey("batch_screenshot")) {
+			Common::FSNode node(Common::Path(ConfMan.get("batch_screenshot"), '/'));
+			Common::WriteStream *out = node.createWriteStream();
+			if (out) {
+				Image::writePNG(*out, getScreen()->rawSurface());
+				out->finalize();
+				delete out;
+			}
+		}
+		if (ConfMan.hasKey("batch_reach"))
+			runBatchReach();
 		Common::StringArray parts = Common::StringTokenizer(ConfMan.get("batch_save"), ",").split();
 		if (parts.size() >= 2) {
 			Common::String desc = parts[1];
