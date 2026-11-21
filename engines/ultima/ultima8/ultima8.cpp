@@ -757,7 +757,8 @@ void Ultima8Engine::runPendingBatchExport() {
 
 	// "batch_info=<file>" writes the avatar's map and position;
 	// "batch_teleport=<x>,<y>,<z>" or "=<eggnum>" moves the avatar on the
-	// current map, then (after the map settles) "batch_save=<slot>,<name>"
+	// current map (or the map "batch_map=<mapnum>" names), then (after the
+	// map settles) "batch_save=<slot>,<name>"
 	// saves to that slot
 	if (_batchStage == 0) {
 		MainActor *av = getMainActor();
@@ -772,11 +773,13 @@ void Ultima8Engine::runPendingBatchExport() {
 			}
 		}
 		if (ConfMan.hasKey("batch_teleport") && av) {
+			// "batch_map=<mapnum>" makes the teleport cross to that map
+			int mapNum = ConfMan.hasKey("batch_map") ? ConfMan.getInt("batch_map") : av->getMapNum();
 			Common::StringArray parts = Common::StringTokenizer(ConfMan.get("batch_teleport"), ",").split();
 			if (parts.size() == 3)
-				av->teleport(av->getMapNum(), atoi(parts[0].c_str()), atoi(parts[1].c_str()), atoi(parts[2].c_str()));
+				av->teleport(mapNum, atoi(parts[0].c_str()), atoi(parts[1].c_str()), atoi(parts[2].c_str()));
 			else if (parts.size() == 1)
-				av->teleport(av->getMapNum(), atoi(parts[0].c_str()));
+				av->teleport(mapNum, atoi(parts[0].c_str()));
 		}
 		if (ConfMan.hasKey("batch_save") || ConfMan.hasKey("batch_screenshot") || ConfMan.hasKey("batch_reach")) {
 			_batchStage = 1;
